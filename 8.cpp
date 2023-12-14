@@ -364,8 +364,7 @@ solve(const std::function<bool(double, double)> &D, double A1, double B1, double
 int
 main(int argc, char **argv)
 {
-    constexpr size_t m = 160, n = 160;
-    //constexpr size_t numThreads = 8;
+    constexpr size_t m = 80, n = 80;
     int numThreads = atoi(argv[1]);
     int size, rank = 0;
     omp_set_dynamic(false);
@@ -376,12 +375,15 @@ main(int argc, char **argv)
     const auto solution = solve<m, n>([](const double x, const double y) { return x * x + 4 * y * y < 1; }, -1, 1, -0.5,
                                       0.5);
     MPI_Finalize();
+    cout << "M = " << m << endl;
+    cout << "threads = " << numThreads << endl;
     if (rank == 0) {
         const auto net = solution.first;
         auto dots = solution.second;
-        for (int i = 0; i < static_cast<int>(m); ++i) {
-            for (int j = 0; j < static_cast<int>(n); ++j) { printf("(%lf,%lf,%lf) ", net.x(i), net.y(j), dots(i, j)); }
-            printf("\n\n");
-        }
+        //for (int i = 0; i < static_cast<int>(m); ++i) {
+            //for (int j = 0; j < static_cast<int>(n); ++j) { //printf("(%lf,%lf,%lf) ", net.x(i), net.y(j), dots(i, j)); }
+            //printf("\n\n");
+        //}
     }
 }
+
