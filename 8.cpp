@@ -1,342 +1,386 @@
 #include <iostream>
-#include <fstream>
-#include <math.h>
-#include <omp.h>
-#include <cstdlib>
+#include <functional>
+#include <cassert>
 #include <cmath>
+#include <omp.h>
 #include <mpi.h>
-#include <cstring>
-using namespace std;  
 
-#define N 320
-#define M 320
-#define a(i,j) a[(i)*(N+1)+j]
-#define b(i,j) b[(i)*(N+1)+j]
-#define w(i,j) w[(i)*(N+1)+j]
-#define w1(i,j) w1[(i)*(N+1)+j]
-#define F(i,j) F[(i)*(N+1)+j]
-#define r(i,j) r[(i)*(N+1)+j]
+#define MAX(a, b) (a >= b ? a : b)
 
-int subdiv(int K, int m, int n);
 
-static int *ix1, *ix2, *jy1, *jy2;
-
-int main(int argc,char *argv[])
+template<size_t M, size_t N>
+struct net
 {
-    double *a = new double [(M+1)*(N+1)]();
-    double *b = new double [(M+1)*(N+1)]();
-    double *F = new double [(M+1)*(N+1)]();
-    double *w = new double [(M+1)*(N+1)]();
-    double *r = new double [(M+1)*(N+1)]();
-	double *w1;
-    double x1=-1, x2=1, y1=-0.5, y2=0.5;   // границы фиктивной области
-    double h1=(x2-x1)/M, h2=(y2-y1)/N;     // шаги сетки по x и по y
-    double eps=h1*h2;
+    double a1;
+    double b1;
+    double a2;
+    double b2;
+    double h1;
+    double h2;
 
-    int nproc, pid;
+    net(const double a1, const double b1, const double a2, const double b2)
+            : a1(a1),
+              b1(b1),
+              a2(a2),
+              b2(b2),
+              h1((b1 - a1) / M),
+              h2((b2 - a2) / N)
+    {}
 
-      /* Инициализируем библиотеку */
-    MPI_Init( &argc, &argv );
+    double
+    x(const double i) const
+    { return a1 + h1 * i; }
 
-      /* Узнаем количество задач в запущенном приложении */
-    MPI_Comm_size( MPI_COMM_WORLD, &nproc );
+    double
+    y(const double j) const
+    { return a2 + h2 * j; }
+};
 
-      /* ... и свой собственный номер: от 0 до (size-1) */
-    MPI_Comm_rank( MPI_COMM_WORLD, &pid );
+template<typename T, size_t M, size_t N>
+class matrix;
 
-    int K=subdiv(nproc, M, N);
+template<typename T, size_t M>
+class vector;
 
-	if (pid==0)
-	{
-		cout << "K "<<K << endl;
-		for (int k=0; k<K; k++)
-		{
-			cout << ix1[k] << ' ';
-			cout << ix2[k] << ' ';
-			cout << jy1[k] << ' ';
-			cout << jy2[k] << endl;
-		}
-		w1 = new double [(M+1)*(N+1)]();
-	}
-	
-    //int nthr=atoi(argv[1]);
-    nthr=4;
-    omp_set_num_threads(nthr);
-    double *dwthr = new double [nthr]();
-    
-	double starttime, endtime;
-    starttime = MPI_Wtime();
-    double time = omp_get_wtime();
-    nthr=omp_get_max_threads();
-	cout << "number of threads=" << nthr << endl;
-	
-    // вычисление коэффициентов a_ij
-    #pragma omp parallel for shared(a,x1,h1,y1,h2,eps)  //private(i,j,x,el,ya,yb,l)
-    for (int i=1; i<=M; i++)
+template<typename T, size_t M, size_t N>
+class matrix
+{
+    T base[M][N];
+
+public:
+    matrix() = default;
+
+    static matrix
+    zero()
     {
-        double x=x1+(i-0.5)*h1;
-        double el=0.5*sqrt(1-x*x);
-        for (int j=1; j<=N; j++)
-        {
-            double ya=y1+(j-0.5)*h2;
-            double yb=ya+h2;
-            if (yb>=-el) yb=min(el,yb);
-            else   // отрезок [ya,yb] ниже реальной области (эллипса)
-            {
-               a(i,j)=1.0/eps;   
-               continue;
-            }
-            if (ya<=el) ya=max(-el,ya);
-            else    // отрезок [ya,yb] выше реальной области (эллипса)
-            {
-               a(i,j)=1.0/eps;
-               continue;
-            }
-            double l=(yb-ya)/h2;
-            a(i,j) = l+(1-l)/eps;
-        }
+        matrix res{};
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res.base[i][j] = static_cast<T>(0); }}
+        return res;
     }
 
-    // вычисление коэффициентов b_ij
-    #pragma omp parallel for shared(b,x1,h1,y1,h2,eps)
-    for (int j=1; j<=N; j++)
+    T
+    norm() const
     {
-        double y=y1+(j-0.5)*h2;
-        double el=sqrt(1-4*y*y);
-        for (int i=1; i<=M; i++)
-        {
-            double xa=x1+(i-0.5)*h1;
-            double xb=xa+h1;
-            if (xb>=-el) xb=min(el,xb);
-            else   // отрезок [xa,xb] левее реальной области (эллипса)
-            {
-               b(i,j)=1.0/eps;   
-               continue;
-            }
-            if (xa<=el) xa=max(-el,xa);
-            else    // отрезок [xa,xb] правее реальной области (эллипса)
-            {
-               b(i,j)=1.0/eps;
-               continue;
-            }
-            double l=(xb-xa)/h1;
-            b(i,j) = l+(1-l)/eps;
-        }
+        T res = static_cast<T>(0);
+#pragma omp parallel for default(none) shared(res)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res += base[i][j] * base[i][j]; }}
+        return std::sqrt(res);
     }
 
-    // вычисление правой части F_ij
-    #pragma omp parallel for shared(F,x1,h1,y1,h2)
-    for (int i=1; i<M; i++)
+    T
+    squaredNorm() const
     {
-        double xa=x1+(i-0.5)*h1;
-        double xb=xa+h1;
-        for (int j=1; j<N; j++)
-        {
-            double ya=y1+(j-0.5)*h2;
-            double yb=ya+h2;
-            int n=100;
-            double dx=(xb-xa)/n;
-            double S=0;
-            for (int k=0; k<n; k++)
-            {
-                double x=xa+(k+0.5)*dx;
-                double el=0.5*sqrt(1-x*x);
-                S += dx*max(0.0,min(yb,el)-max(ya,-el));
+        T res = static_cast<T>(0);
+#pragma omp parallel for default(none) shared(res)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res += base[i][j] * base[i][j]; }}
+        return res;
+    }
+
+    vector<T, M * N>
+    reshaped() const
+    {
+        vector<T, M * N> res;
+#pragma omp parallel for default(none) shared(res)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i * M + j) = (*this)(i, j); }}
+        return res;
+    }
+
+    T &
+    operator()(size_t i, size_t j)
+    { return base[i][j]; }
+
+    const T &
+    operator()(size_t i, size_t j) const
+    { return base[i][j]; }
+
+    friend matrix
+    operator+(const matrix &left, const matrix &right)
+    {
+        matrix res;
+#pragma omp parallel for default(none) shared(res, left, right)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i, j) = left(i, j) + right(i, j); }}
+        return res;
+    }
+
+
+    friend matrix
+    operator-(const matrix &left, const matrix &right)
+    {
+        matrix res{};
+#pragma omp parallel for default(none) shared(res, left, right)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i, j) = left(i, j) - right(i, j); }}
+        return res;
+    }
+
+    friend matrix
+    operator*(const matrix &left, T k)
+    {
+        matrix res;
+#pragma omp parallel for default(none) shared(res, k, left)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i, j) = left(i, j) * k; }}
+        return res;
+    }
+
+    friend matrix
+    operator*(T k, const matrix &right)
+    {
+        matrix res{};
+#pragma omp parallel for default(none) shared(res, k, right)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i, j) = right(i, j) * k; }}
+        return res;
+    }
+
+    matrix
+    operator-() const
+    {
+        matrix res{};
+#pragma omp parallel for default(none) shared(res)
+        for (size_t i = 0; i < M; ++i) { for (size_t j = 0; j < N; ++j) { res(i, j) = -base[i][j]; }}
+        return res;
+    }
+
+    template<size_t K>
+    friend matrix
+    operator*(const matrix<T, M, K> &left, const matrix<T, K, N> &right)
+    {
+        matrix res = matrix::zero();
+#pragma omp parallel for default(none) shared(res, left, right)
+        for (size_t i = 0; i < M; ++i) {
+            for (size_t j = 0; j < N; ++j) {
+                for (size_t k = 0; k < K; ++k) {
+                    res(i, j) += left(i, k) * right(k, j);
+                }
             }
-            F(i,j)=S/h1/h2;
         }
+        return res;
     }
 
-    // итерации Якоби
-    int it=0;
-    double dwmax=0;
-    double t0=0, t1=0, t2=0, t3=0, t4=0, t5=0, tt=0;
-	t0 += MPI_Wtime()-starttime;
-	double trecv=0;
-    for (it=0;it<1000000; it++)
+    matrix &
+    operator+=(const matrix &other)
+    { return *this = *this + other; }
+
+    matrix &
+    operator-=(const matrix &other)
+    { return *this = *this - other; }
+
+    matrix &
+    operator*=(T k)
+    { return *this = *this * k; }
+
+    template<size_t K>
+    matrix<T, M, K> &
+    operator*=(const matrix<T, N, K> &other)
+    { return *this = *this * other; }
+
+    friend std::ostream &
+    operator<<(std::ostream &out, const matrix matrix)
     {
-        if (pid==0) for (int i=0; i<nthr; i++) dwthr[i]=0;
-		tt=MPI_Wtime();
-		
-		for (int k=pid; k<K; k +=nproc)
-		{
-			// вычисление вектора
-			// r_ij = F_ij - A_{i+1,j} w_{i+1,j} - A_{i-1,j} w_{i-1,j} - A_{i,j+1} w_{i,j+1} - A_{i,j-1} w_{i,j-1}
-			#pragma omp parallel for shared(a,b,F,w,r,h1,h2)
-			for (int i=ix1[k]; i<ix2[k]; i++)
-			{
-				for (int j=jy1[k]; j<jy2[k]; j++)
-				{
-					r(i,j) =  F(i,j);
-					r(i,j) += (a(i+1,j)*w(i+1,j) + a(i,j)*w(i-1,j))/h1/h1;
-					r(i,j) += (b(i,j+1)*w(i,j+1) + b(i,j)*w(i,j-1))/h2/h2;
-				}
-			}
-		}
-		
-		t1 += MPI_Wtime()-tt;
-		tt=MPI_Wtime();
-		
-		// изменение текущего приближения решения w
-		// w_ij = r_ij /A_ij
-		for (int k=pid; k<K; k +=nproc)
-		{
-			#pragma omp parallel for shared(a,b,r,w,h1,h2,dwthr)
-			for (int i=ix1[k]; i<ix2[k]; i++)
-			{
-				int id = omp_get_thread_num();
-				for (int j=jy1[k]; j<jy2[k]; j++)
-				{
-					double wo=w(i,j);
-					w(i,j) = r(i,j)/((a(i+1,j) + a(i,j))/h1/h1 + (b(i,j+1) + b(i,j))/h2/h2);
-					if (pid==0) 
-					{
-						double dw=abs(w(i,j)-wo);
-						// максимум изменения w для каждого треда
-						if ( dwthr[id] < dw )
-							dwthr[id] = dw;
-					}
-				}
-			}
-			
-		}
-		
-		t2 += MPI_Wtime()-tt;
-		tt=MPI_Wtime();
-		
-
-		// объединить в управляющем процессе решения от остальных процессов 
-        if (pid!=0)
-            MPI_Send(w, (M+1)*(N+1), MPI_DOUBLE_PRECISION, 0, 0, MPI_COMM_WORLD);
-		
-        if (pid==0)
-		{
-			int nrecv=0;
-			while (nrecv<nproc-1)
-			{
-				MPI_Status status;
-				int flag=0;
-				MPI_Probe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
-				int id=status.MPI_SOURCE;
-				double tr = MPI_Wtime();
-				MPI_Recv(w1, (M+1)*(N+1), MPI_DOUBLE_PRECISION, id, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-				trecv += MPI_Wtime()-tr;
-				for (int k=id; k<K; k +=nproc)
-				#pragma omp parallel for
-				for (int i=ix1[k]; i<ix2[k]; i++)
-				{
-					int id = omp_get_thread_num();
-					for (int j=jy1[k]; j<jy2[k]; j++)
-					{
-						double dw=abs(w(i,j)-w1(i,j));
-						w(i,j) = w1(i,j);
-						// максимум изменения w для каждого треда
-						if ( dwthr[id] < dw ) dwthr[id] = dw;
-					}
-				}
-				nrecv++;
-			}
+        for (size_t i = 0; i < M; ++i) {
+            for (size_t j = 0; j < N; ++j) { out << matrix(i, j) << ' '; }
+            out << std::endl;
         }
-		t3 += MPI_Wtime()-tt;
-		tt=MPI_Wtime();
-
-		if (pid==0) {
-			dwmax=0;
-			for (int i=0; i<nthr; i++) dwmax=max(dwmax,dwthr[i]); // максимум изменения w по потокам
-			if (it%10000==0) cout << "It = " << it << ", dw = " << dwmax << endl;
-		}
-		
-        MPI_Bcast(w, (M+1)*(N+1), MPI_DOUBLE_PRECISION, 0, MPI_COMM_WORLD);
-		
-		t4 += MPI_Wtime()-tt;
-		tt=MPI_Wtime();
-
-		// разослать глобальное изменение решения по процессам для использования в критерии окончания итераций
-        MPI_Bcast(&dwmax, 1, MPI_DOUBLE_PRECISION, 0, MPI_COMM_WORLD);
-        MPI_Barrier(MPI_COMM_WORLD);
-		t5 += MPI_Wtime()-tt;
-		tt=MPI_Wtime();
-
-		if (dwmax<2e-8) break;    // выход из цикла итераций Якоби при достижении точности
+        return out;
     }
-    
+};
 
-    // вывод решения в файл в основном процессе
-	if (pid==0)
-	{
-		ofstream rslt;
-		rslt.open ("result.txt");
-		for (int j=0; j<=N; j++)
-		{
-			rslt << w(0,j);
-			for (int i=1; i<=M; i++)
-				rslt << ",\t" << w(i,j);
-			rslt << endl;
-		}
-		rslt.close();
-	}
-	
-    if (pid==0)
-	{
-		cout << "MY TIME OF PROG = " << omp_get_wtime() - time << endl;
-		cout << "It = " << it << ", dw = " << dwmax << endl;
-		endtime   = MPI_Wtime();
-		printf("Mpi Time %f seconds\n",endtime-starttime);
-	}
-	
-	//cout <<"t0 "<< t0 << ' ' << pid << endl;
-	//cout <<"t1 "<< t1 << ' ' << pid << endl;
-	//cout <<"t2 "<< t2 << ' ' << pid << endl;
-	//cout <<"t3 "<< t3 << ' ' << pid << endl;
-	//cout <<"t4 "<< t4 << ' ' << pid << endl;
-	//cout <<"t5 "<< t5 << ' ' << pid << endl;
-	//if (pid==0) cout << "trecv "<< trecv  << endl;
-	
-    delete[] a;
-    delete[] b;
-    delete[] F;
-    delete[] w;
-    delete[] r;
-    /* Все задачи завершают выполнение */
-    MPI_Finalize();
-    return 0;
+template<typename T, size_t M>
+class vector : public matrix<T, M, 1>
+{
+public:
+    using matrix<T, M, 1>::norm;
+    using matrix<T, M, 1>::squaredNorm;
+
+    T &
+    operator()(size_t i)
+    { return matrix<T, M, 1>::operator()(i, 1); }
+
+    const T &
+    operator()(size_t i) const
+    { return matrix<T, M, 1>::operator()(i, 1); }
+
+    template<size_t N>
+    friend vector
+    operator*(const matrix<T, M, N> &left, const vector<T, N> &right)
+    { return left * static_cast<matrix<T, N, 1>>(right); }
+
+    T
+    dot(const vector &other)
+    {
+        T res = static_cast<T>(0);
+#pragma omp parallel for default(none) shared(res, other)
+        for (size_t i = 0; i < M; ++i) { res += (*this)(i) * other(i); }
+        return res;
+    }
+};
+
+template<size_t M, size_t N>
+matrix<double, M, N>
+least_residuals(
+        std::function<matrix<double, M, N>(matrix<double, M, N>)> A,
+        const matrix<double, M, N> &b,
+        double delta = 0.00001)
+{
+    matrix<double, M, N> w = matrix<double, M, N>::zero();
+    matrix<double, M, N> wPrev{};
+    do {
+        wPrev = w;
+        matrix<double, M, N> r = A(w) - b;
+        if (r.norm() <= delta) { break; }
+        auto tmp = A(r);
+        double t = tmp.reshaped().dot(r.reshaped()) / tmp.squaredNorm();
+        w -= t * r;
+    } while ((w - wPrev).norm() >= delta);
+    return w;
 }
 
-// деление на K подобластей
-int subdiv(int K, int m0, int n0)
+template<size_t M, size_t N>
+matrix<double, M, N>
+right_x_derivative(const matrix<double, M, N> &w, double h)
 {
-	int m=m0-1;
-	int n=m0-1;
-    int nx0=round(0.5*sqrt((2.0*K*m)/n)+0.5*sqrt((K*m)/(2.0*m)));
-    int ny0=round((1.0*K)/nx0);
-    if (nx0<ny0 && m>=n) swap(nx0,ny0);
-    if (nx0>ny0 && m<n) swap(nx0,ny0);
-	if (nx0*ny0<K)
-	{
-		if ((m0*1.0)/nx0 < (n0*1.0)/ny0) ny0++;
-		else nx0++;
-	}
-    ix1=new int [nx0*ny0]();
-    ix2=new int [nx0*ny0]();
-    jy1=new int [nx0*ny0]();
-    jy2=new int [nx0*ny0]();
-    int ix=1, jy=1;
-    int K1=0;
-    for (int i=0; i<nx0; i++)
-    {
-        int ixn = ix + (m0-ix)/(nx0-i);
-        jy=1;
-        for (int j=0; j<ny0; j++)
-        {
-            int jyn = jy + (n0-jy)/(ny0-j);
-            ix1[K1]=ix; 
-            ix2[K1]=ixn;
-            jy1[K1]=jy; 
-            jy2[K1]=jyn;
-            K1++;
-            jy=jyn;
+    matrix<double, M, N> res = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(res, w, h)
+    for (size_t i = 1; i < M - 1; ++i) {
+        for (size_t j = 1; j < N - 1; ++j) {
+            res(i, j) = (w(i + 1, j) - w(i, j)) / h;
         }
-        ix=ixn;
     }
-    return K1;
+    return res;
+}
+
+template<size_t M, size_t N>
+matrix<double, M, N>
+left_x_derivative(const matrix<double, M, N> &w, double h)
+{
+    matrix<double, M, N> res = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(res, w, h)
+    for (size_t i = 1; i < M - 1; ++i) {
+        for (size_t j = 1; j < N - 1; ++j) {
+            res(i, j) = (w(i, j) - w(i - 1, j)) / h;
+        }
+    }
+    return res;
+}
+
+template<size_t M, size_t N>
+matrix<double, M, N>
+right_y_derivative(const matrix<double, M, N> &w, double h)
+{
+    matrix<double, M, N> res = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(res, w, h)
+    for (size_t i = 1; i < M - 1; ++i) {
+        for (size_t j = 1; j < N - 1; ++j) {
+            res(i, j) = (w(i, j + 1) - w(i, j)) / h;
+        }
+    }
+    return res;
+}
+
+template<size_t M, size_t N>
+matrix<double, M, N>
+left_y_derivative(const matrix<double, M, N> &w, double h)
+{
+    matrix<double, M, N> res = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(res, w, h)
+    for (size_t i = 1; i < M - 1; ++i) {
+        for (size_t j = 1; j < N - 1; ++j) {
+            res(i, j) = (w(i, j) - w(i, j - 1)) / h;
+        }
+    }
+    return res;
+}
+
+double
+integrate(
+        const std::function<double(double)> &function,
+        const std::pair<double, double> &xlim,
+        const double dx = 0.001)
+{
+    double res = 0;
+    for (int i = 0; i < (xlim.second - xlim.first) / dx; ++i) {
+        const double x = xlim.first + i * dx;
+        res += function(x) * dx;
+    }
+    return res;
+}
+
+double
+integrate2D(
+        const std::function<double(double, double)> &function,
+        const std::pair<double, double> &xlim,
+        const std::pair<double, double> &ylim,
+        const double dx = 0.001,
+        const double dy = 0.001)
+{
+    double res = 0.0;
+    for (int i = 0; i < (xlim.second - xlim.first) / dx; ++i) {
+        double const x = xlim.first + i * dx;
+        for (int j = 0; j < (ylim.second - ylim.first) / dy; ++j) {
+            const double y = ylim.first + j * dy;
+            res += function(x, y) * dx * dy;
+        }
+    }
+    return res;
+}
+
+template<size_t M, size_t N>
+std::pair<net<M, N>, matrix<double, M, N>>
+solve(const std::function<bool(double, double)> &D, double A1, double B1, double A2, double B2)
+{
+    assert(B1 > A1 && B2 > A2);
+    net<M, N> net(A1, B1, A2, B2);
+    const double h = MAX(net.h1, net.h2);
+    double eps = h * h;
+    auto k = [eps, &D](const double x, const double y) { return D(x, y) ? 1 : eps; };
+    matrix<double, M, N> w{};
+    matrix<double, M, N> a = matrix<double, M, N>::zero();
+    matrix<double, M, N> b = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(net, k, a, b)
+    for (int i = 1; i < static_cast<int>(M) - 1; ++i) {
+        for (int j = 1; j < static_cast<int>(N) - 1; ++j) {
+            a(i, j) = integrate([&net, i, &k](const double t) { return k(net.x(i - 0.5), t); },
+                                { net.y(j - 0.5), net.y(j + 0.5) }) / net.h2;
+            b(i, j) = integrate([&net, j, &k](const double t) { return k(t, net.y(j - 0.5)); },
+                                { net.x(i - 0.5), net.x(i + 0.5) }) / net.h1;
+        }
+    }
+    auto A = [&a, &b, &net](matrix<double, M, N> x) {
+        return -right_x_derivative<M, N>(a * left_x_derivative<M, N>(x, net.h1), net.h1) -
+               right_y_derivative<M, N>(b * left_y_derivative<M, N>(x, net.h2), net.h2);
+    };
+    matrix<double, M, N> F = matrix<double, M, N>::zero();
+#pragma omp parallel for default(none) shared(F, D, net)
+    for (int i = 1; i < static_cast<int>(M) - 1; ++i) {
+        for (int j = 1; j < static_cast<int>(N) - 1; ++j) {
+            F(i, j) =
+                    integrate2D([&D](const double x, const double y) { return D(x, y) ? 1 : 0; },
+                                { net.x(i - 0.5), net.x(i + 0.5) },
+                                { net.y(j - 0.5), net.y(j + 0.5) }) / net.h1 / net.h2;
+        }
+    }
+    return { net, least_residuals<M, N>(A, F) };
+}
+
+
+int
+main(int argc, char **argv)
+{
+    constexpr size_t m = 160, n = 160;
+    constexpr size_t numThreads = 8;
+    int size, rank = 0;
+    omp_set_dynamic(false);
+    omp_set_num_threads(numThreads);
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    const auto solution = solve<m, n>([](const double x, const double y) { return x * x + 4 * y * y < 1; }, -1, 1, -0.5,
+                                      0.5);
+    MPI_Finalize();
+    if (rank == 0) {
+        const auto net = solution.first;
+        auto dots = solution.second;
+        for (int i = 0; i < static_cast<int>(m); ++i) {
+            for (int j = 0; j < static_cast<int>(n); ++j) { printf("(%lf,%lf,%lf) ", net.x(i), net.y(j), dots(i, j)); }
+            printf("\n\n");
+        }
+    }
 }
