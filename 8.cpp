@@ -365,7 +365,8 @@ int
 main(int argc, char **argv)
 {
     constexpr size_t m = 160, n = 160;
-    constexpr size_t numThreads = 8;
+    //constexpr size_t numThreads = 8;
+    int numThreads = atoi(argv[1]);
     int size, rank = 0;
     omp_set_dynamic(false);
     omp_set_num_threads(numThreads);
